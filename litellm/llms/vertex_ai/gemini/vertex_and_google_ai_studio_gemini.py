@@ -1344,6 +1344,75 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             return False
 
     @staticmethod
+    def _process_response_tokens_from_details(
+        usage_metadata: dict,
+        response_tokens_details: Optional[CompletionTokensDetailsWrapper],
+    ) -> Optional[CompletionTokensDetailsWrapper]:
+        """Process responseTokensDetails from usage metadata."""
+        if "responseTokensDetails" not in usage_metadata:
+            return response_tokens_details
+
+        if response_tokens_details is None:
+            response_tokens_details = CompletionTokensDetailsWrapper()
+
+        for detail in usage_metadata["responseTokensDetails"]:
+            if detail["modality"] == "TEXT":
+                response_tokens_details.text_tokens = detail.get("tokenCount", 0)
+            elif detail["modality"] == "AUDIO":
+                response_tokens_details.audio_tokens = detail.get("tokenCount", 0)
+
+        return response_tokens_details
+
+    @staticmethod
+    def _process_candidates_tokens_details(
+        usage_metadata: dict,
+        response_tokens_details: Optional[CompletionTokensDetailsWrapper],
+    ) -> Optional[CompletionTokensDetailsWrapper]:
+        """Process candidatesTokensDetails from usage metadata."""
+        if "candidatesTokensDetails" not in usage_metadata:
+            return response_tokens_details
+
+        if response_tokens_details is None:
+            response_tokens_details = CompletionTokensDetailsWrapper()
+
+        for detail in usage_metadata["candidatesTokensDetails"]:
+            modality = detail.get("modality")
+            token_count = detail.get("tokenCount", 0)
+            if modality == "TEXT":
+                response_tokens_details.text_tokens = token_count
+            elif modality == "AUDIO":
+                response_tokens_details.audio_tokens = token_count
+            elif modality == "IMAGE":
+                response_tokens_details.image_tokens = token_count
+
+        # Calculate text_tokens if not explicitly provided in candidatesTokensDetails
+        # candidatesTokenCount includes all modalities, so: text = total - (image + audio)
+        if response_tokens_details.text_tokens is None:
+            candidates_token_count = usage_metadata.get("candidatesTokenCount", 0)
+            image_tokens = response_tokens_details.image_tokens or 0
+            audio_tokens_candidate = response_tokens_details.audio_tokens or 0
+            calculated_text_tokens = candidates_token_count - image_tokens - audio_tokens_candidate
+            response_tokens_details.text_tokens = calculated_text_tokens
+
+        return response_tokens_details
+
+    @staticmethod
+    def _update_prompt_token_details(
+        usage_metadata: dict, audio_tokens: Optional[int], text_tokens: Optional[int]
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Update prompt token details from usage metadata."""
+        if "promptTokensDetails" not in usage_metadata:
+            return audio_tokens, text_tokens
+
+        for detail in usage_metadata["promptTokensDetails"]:
+            if detail["modality"] == "AUDIO":
+                audio_tokens = detail.get("tokenCount", 0)
+            elif detail["modality"] == "TEXT":
+                text_tokens = detail.get("tokenCount", 0)
+
+        return audio_tokens, text_tokens
+
+    @staticmethod
     def _calculate_usage(
         completion_response: Union[
             GenerateContentResponseBody, BidiGenerateContentServerMessage
@@ -1370,45 +1439,20 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         ## GEMINI LIVE API ONLY PARAMS ##
         if "responseTokenCount" in usage_metadata:
             response_tokens = usage_metadata["responseTokenCount"]
-        if "responseTokensDetails" in usage_metadata:
-            response_tokens_details = CompletionTokensDetailsWrapper()
-            for detail in usage_metadata["responseTokensDetails"]:
-                if detail["modality"] == "TEXT":
-                    response_tokens_details.text_tokens = detail.get("tokenCount", 0)
-                elif detail["modality"] == "AUDIO":
-                    response_tokens_details.audio_tokens = detail.get("tokenCount", 0)
+        response_tokens_details = VertexGeminiConfig._process_response_tokens_from_details(
+            usage_metadata, response_tokens_details
+        )
         #########################################################
 
         ## CANDIDATES TOKEN DETAILS (e.g., for image generation models) ##
-        if "candidatesTokensDetails" in usage_metadata:
-            if response_tokens_details is None:
-                response_tokens_details = CompletionTokensDetailsWrapper()
-            for detail in usage_metadata["candidatesTokensDetails"]:
-                modality = detail.get("modality")
-                token_count = detail.get("tokenCount", 0)
-                if modality == "TEXT":
-                    response_tokens_details.text_tokens = token_count
-                elif modality == "AUDIO":
-                    response_tokens_details.audio_tokens = token_count
-                elif modality == "IMAGE":
-                    response_tokens_details.image_tokens = token_count
-
-            # Calculate text_tokens if not explicitly provided in candidatesTokensDetails
-            # candidatesTokenCount includes all modalities, so: text = total - (image + audio)
-            if response_tokens_details.text_tokens is None:
-                candidates_token_count = usage_metadata.get("candidatesTokenCount", 0)
-                image_tokens = response_tokens_details.image_tokens or 0
-                audio_tokens_candidate = response_tokens_details.audio_tokens or 0
-                calculated_text_tokens = candidates_token_count - image_tokens - audio_tokens_candidate
-                response_tokens_details.text_tokens = calculated_text_tokens
+        response_tokens_details = VertexGeminiConfig._process_candidates_tokens_details(
+            usage_metadata, response_tokens_details
+        )
         #########################################################
 
-        if "promptTokensDetails" in usage_metadata:
-            for detail in usage_metadata["promptTokensDetails"]:
-                if detail["modality"] == "AUDIO":
-                    audio_tokens = detail.get("tokenCount", 0)
-                elif detail["modality"] == "TEXT":
-                    text_tokens = detail.get("tokenCount", 0)
+        audio_tokens, text_tokens = VertexGeminiConfig._update_prompt_token_details(
+            usage_metadata, audio_tokens, text_tokens
+        )
         if "thoughtsTokenCount" in usage_metadata:
             reasoning_tokens = usage_metadata["thoughtsTokenCount"]
             # Also add reasoning tokens to response_tokens_details
